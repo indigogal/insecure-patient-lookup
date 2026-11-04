@@ -24,8 +24,8 @@ export const cfg = {
   host: process.env.DB_HOST || '127.0.0.1',
   port: String(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'hospital',
+  password: process.env.DB_PASSWORD || 'root',
+  database: process.env.DB_NAME || 'lab',
   table: process.env.DB_TABLE || 'historiales_clinicos',
   csvPath:
     process.env.CSV_PATH ||
@@ -212,7 +212,7 @@ function runSqlOnce(sql) {
       if (code === 0) resolve();
       else reject(new Error(`mysql exited with code ${code}: ${stderr.trim()}`));
     });
-    child.stdin.on('error', () => {});
+    child.stdin.on('error', () => { });
     child.stdin.end(sql);
   });
 }

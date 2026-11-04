@@ -26,9 +26,11 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.5",
     "@tailwindcss/vite": "^4.3.3",
     "hono": "^4.13.14",
-    "react": "^19.3.1",
+    "mysql2": "^3.24.6",
+    "preact": "^11.1.1",
     "tailwindcss": "^4.3.3",
     "vite": "^8.3.5"
   }
