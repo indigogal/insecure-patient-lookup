@@ -1,14 +1,14 @@
 # Insecure Patient Lookup
 
-This app is meant to be purposefully exploitable and insecure to demonstrate differnt vulnerabilities that could affect poorly written web apps and systems.
+Esta aplicación está creada para ser deliberadamente explotable e insegura, con el fin de demostrar diferentes vulnerabilidades que podrían afectar a aplicaciones web y sistemas mal escritos.
 
-The case that will be examined for this repo is that of a clinic that runs this node app as the frontend for their database (see the CSV for a plaintext record), the app s able to look up patient information and display it, simple stuff, the following vulnerabilities are present in this application:
+El caso que se examinará en este repositorio es el de una clínica que utiliza esta aplicación de Node como interfaz para su base de datos (consulta el CSV para ver un registro en texto plano). La aplicación puede buscar información de pacientes y mostrarla, algo sencillo. Las siguientes vulnerabilidades están presentes en esta aplicación:
 
 - XSS
 - SQLi
-- Lack of SSL / no HTTPS
-- Weak, plaintext cookies for login
-- Weak auth via password, without MFA or rate-limiting on the server side
+- Falta de SSL / sin HTTPS
+- Cookies de login débiles y almacenadas en texto plano
+- Autenticación débil por contraseña, sin MFA ni limitación de intentos (rate-limiting) en el servidor
 
 ## Vulnerabilidades documentadas
 
