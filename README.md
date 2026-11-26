@@ -10,6 +10,72 @@ El caso que se examinará en este repositorio es el de una clínica que utiliza 
 - Cookies de login débiles y almacenadas en texto plano
 - Autenticación débil por contraseña, sin MFA ni limitación de intentos (rate-limiting) en el servidor
 
+## Ejecución con Docker
+
+El proyecto incluye un `docker-compose.yml` con dos servicios: `app` (el servidor de desarrollo de Vite/Hono en el puerto `8080`) y `db` (MariaDB 11 con los datos persistidos en un volumen). No hace falta instalar Node ni MariaDB en el equipo anfitrión.
+
+> **Requisito:** Docker con el plugin Compose.
+
+### 1. Construir y levantar los contenedores
+
+```bash
+docker compose up --build -d
+```
+
+La base de datos se inicializa automáticamente la primera vez que arranca:
+
+- `veryBadDatabase.sql` crea la base `lab` y las tablas `historiales_clinicos`, `Users` y `Passwords`.
+- `docker/init/01-demo-users.sql` inserta el usuario de prueba documentado más abajo.
+
+El servicio `app` espera a que `db` esté saludable antes de iniciar. La aplicación queda disponible en <http://localhost:8080>.
+
+### 2. Cargar los registros de pacientes (CSV)
+
+El esquema arranca sin pacientes; las 2000 filas de `BD_Historiales_Clinicos_2000.csv` se cargan con el servicio `seed`, que ejecuta `migration.js` contra la base de datos del contenedor:
+
+```bash
+docker compose --profile seed run --rm seed
+```
+
+Salida esperada al final: `Migrated 2000 patients into lab.historiales_clinicos`. El servicio `seed` no es idempotente (falla si se ejecuta dos veces por claves primarias duplicadas).
+
+### 3. Ingresar a la aplicación
+
+Abre <http://localhost:8080/login> e inicia sesión con:
+
+| Campo | Valor |
+| --- | --- |
+| Número de empleado (`uid`) | `1` |
+| Contraseña | `admin` |
+
+Los ejemplos de `curl` de la sección de vulnerabilidades usan el puerto `5173` porque se probaron con el servidor local (`pnpm dev`); con Docker basta cambiar el puerto a `8080`.
+
+### 4. Comandos útiles
+
+```bash
+docker compose ps                                # estado de los servicios
+docker compose logs -f app                       # logs del servidor de desarrollo
+docker compose exec db mariadb -ulab -plab lab   # consola SQL
+docker compose down                              # detener y eliminar los contenedores (conserva los datos)
+docker compose down -v                           # detener y borrar el volumen de la base de datos
+```
+
+Tras `down -v`, el siguiente `up` vuelve a ejecutar los scripts de inicialización; recuerda correr también el paso 2 para recargar el CSV.
+
+### Variables de entorno
+
+La aplicación lee la conexión a la base de datos desde el entorno (`src/index.tsx:13-17`). Los valores del `docker-compose.yml` son:
+
+| Variable | Valor | Descripción |
+| --- | --- | --- |
+| `DB_HOST` | `db` | Nombre del servicio de MariaDB |
+| `DB_PORT` | `3306` | Puerto de MariaDB |
+| `DB_USER` | `lab` | Usuario creado por la imagen de MariaDB |
+| `DB_PASSWORD` | `lab` | Contraseña del usuario `lab` |
+| `DB_NAME` | `lab` | Nombre de la base de datos |
+
+Para cambiarlos, edita el bloque `environment` de los servicios `app` y `seed` (y las variables `MARIADB_*` del servicio `db`) en `docker-compose.yml`. Los datos solo se inicializan cuando el volumen está vacío: si cambias las credenciales o el esquema, usa `docker compose down -v` antes de volver a levantar.
+
 ## Vulnerabilidades documentadas
 
 ### Inyección SQL en `/api/login` (bypass de autenticación)
