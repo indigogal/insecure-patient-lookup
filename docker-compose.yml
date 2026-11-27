@@ -33,6 +33,8 @@ services:
       DB_PASSWORD: lab
       DB_NAME: lab
       JWT_SECRET: dev-only-change-me
+    volumes:
+      - ./certs:/patient-lookup/certs:ro
     depends_on:
       db:
         condition: service_healthy
