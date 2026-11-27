@@ -9,7 +9,7 @@ export function Search({ error }: { error?: string }) {
 
       {error ? (
         <div role="alert" className="alert alert-error w-sm">
-          <span dangerouslySetInnerHTML={{ __html: error }} />
+          <span>{error}</span>
         </div>
       ) : null}
 

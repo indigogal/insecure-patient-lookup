@@ -23,7 +23,10 @@ export function Home({ records }: { records: PatientRecord[] }) {
         <h1 className="font-bold text-2xl">
           Historiales Clínicos <span className="badge badge-neutral">{records.length}</span>
         </h1>
-        <a href="/search" className="btn btn-neutral">Buscar paciente</a>
+        <div className="flex gap-2">
+          <a href="/search" className="btn btn-neutral">Buscar paciente</a>
+          <a href="/logout" className="btn btn-outline">Cerrar sesión</a>
+        </div>
       </div>
       <div className="overflow-x-auto w-full">
         <table className="table table-zebra">
@@ -37,13 +40,9 @@ export function Home({ records }: { records: PatientRecord[] }) {
           <tbody>
             {records.map((record) => (
               <tr key={record.ID_Paciente}>
-                {COLUMNS.map((col) =>
-                  col.key === 'Nombre_Completo' ? (
-                    <td key={col.key} dangerouslySetInnerHTML={{ __html: record.Nombre_Completo }} />
-                  ) : (
-                    <td key={col.key}>{String(record[col.key])}</td>
-                  )
-                )}
+                {COLUMNS.map((col) => (
+                  <td key={col.key}>{String(record[col.key])}</td>
+                ))}
               </tr>
             ))}
           </tbody>

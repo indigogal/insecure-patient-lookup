@@ -4,10 +4,38 @@ import { Login } from './Login'
 import { Search } from './Search'
 import { Patient, type PatientRecord } from './Patient'
 import { Home } from './Home'
-import { getCookie, setCookie } from 'hono/cookie'
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import type { RowDataPacket } from 'mysql2'
 import mysql from 'mysql2/promise'
 import { getConnInfo } from '@hono/node-server/conninfo'
+import { logger } from 'hono/logger'
+import { HTTPException } from 'hono/http-exception'
+import { sign, verify, jwt } from 'hono/jwt'
+import { timingSafeEqual } from 'node:crypto'
+import bcrypt from 'bcrypt'
+
+const SECRET = process.env.JWT_SECRET
+if (!SECRET) {
+  console.warn('JWT_SECRET no está definido: se usa un secreto de desarrollo. Configúralo antes de desplegar.')
+}
+const JWT_SECRET = SECRET ?? 'testing'
+const TOKEN_COOKIE = 'token'
+const TOKEN_TTL_SECONDS = 60 * 60 * 3 // 3 horas
+
+const UID_PATTERN = /^\d{1,10}$/
+const IDENTIFIER_PATTERN = /^[A-Za-z0-9_.-]{1,60}$/
+const PATIENT_ID_PATTERN = /^\d{1,10}$/
+const PASSWORD_PATTERN = /^[\x20-\x7E]{1,72}$/
+const BCRYPT_HASH_PATTERN = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/
+
+const LOGIN_BY_UID_SQL = `SELECT u.uid, u.name, p.pwd
+  FROM Users u
+  JOIN Passwords p ON u.uid = p.uid
+  WHERE u.uid = ?`
+const LOGIN_BY_NAME_SQL = `SELECT u.uid, u.name, p.pwd
+  FROM Users u
+  JOIN Passwords p ON u.uid = p.uid
+  WHERE u.name = ?`
 
 const conn = await mysql.createConnection({
   host: process.env.DB_HOST || '127.0.0.1',
@@ -19,6 +47,27 @@ const conn = await mysql.createConnection({
 
 const app = new Hono()
 
+const auth = jwt({ secret: JWT_SECRET, alg: 'HS256', cookie: TOKEN_COOKIE })
+
+async function passwordMatches(input: string, stored: string) {
+  if (BCRYPT_HASH_PATTERN.test(stored)) {
+    return bcrypt.compare(input, stored)
+  }
+  const given = Buffer.from(input)
+  const expected = Buffer.from(stored)
+  return given.length === expected.length && timingSafeEqual(given, expected)
+}
+
+app.onError((err, c) => {
+  if (err instanceof HTTPException && err.status === 401) {
+    deleteCookie(c, TOKEN_COOKIE)
+    return c.redirect('/login')
+  }
+  console.error(`Unhandled error on ${c.req.method} ${c.req.path}`, err)
+  return c.text('Internal server error', 500)
+})
+
+app.use(logger())
 app.use(
   jsxRenderer(({ children }) => {
     return (
@@ -36,17 +85,27 @@ app.use(
   })
 )
 
-app.get('/', (c) => {
-  const auth = getCookie(c, 'auth')
-  if (typeof auth === 'undefined' || auth === 'false') {
+app.get('/', async (c) => {
+  const token = getCookie(c, TOKEN_COOKIE)
+  if (!token) {
     return c.redirect('/login')
-  } else {
-    return c.redirect('/home')
   }
+  try {
+    await verify(token, JWT_SECRET, 'HS256')
+  } catch {
+    deleteCookie(c, TOKEN_COOKIE)
+    return c.redirect('/login')
+  }
+  return c.redirect('/home')
 })
 
 app.get('/login', (c) => {
   return c.render(<Login />)
+})
+
+app.get('/logout', (c) => {
+  deleteCookie(c, TOKEN_COOKIE)
+  return c.redirect('/login')
 })
 
 app.post('/api/login', async (c) => {
@@ -55,38 +114,56 @@ app.post('/api/login', async (c) => {
     const body: any = contentType.includes('application/json')
       ? await c.req.json()
       : await c.req.parseBody()
-    const uid = body.uid
-    const pwd = body.pwd
+    const identifier = String(body.uid ?? '').trim()
+    const pwd = typeof body.pwd === 'string' ? body.pwd : ''
 
-    const [rows] = await conn.query<RowDataPacket[]>(
-      `SELECT u.uid, u.name, p.pwd
-       FROM Users u
-       JOIN Passwords p ON u.uid = p.uid
-       WHERE u.uid = '${uid}'`
+    const wantsJson = contentType.includes('application/json')
+    const invalid = (status: 400 | 401) => {
+      const message = 'Usuario o contraseña incorrectos, intente de nuevo'
+      console.log(`Login rechazado para ${JSON.stringify(identifier)} desde ${getConnInfo(c).remote.address}`)
+      if (wantsJson) {
+        c.status(status)
+        return c.json({ auth: false, message })
+      }
+      return c.render(<Login error={message} />)
+    }
+
+    if (!IDENTIFIER_PATTERN.test(identifier) || !PASSWORD_PATTERN.test(pwd)) {
+      return invalid(400)
+    }
+
+    const [rows] = await conn.execute<RowDataPacket[]>(
+      UID_PATTERN.test(identifier) ? LOGIN_BY_UID_SQL : LOGIN_BY_NAME_SQL,
+      [identifier]
     )
 
     const user = rows[0]
+    const passwordOk = user ? await passwordMatches(pwd, user.pwd) : false
 
-    if (!user) {
-      const message = `Usuario ${uid} no encontrado`
-      if (contentType.includes('application/json')) {
-        c.status(404)
-        return c.json({ auth: false, message })
-      }
-      return c.render(<Login error={message} uid={uid} />)
+    if (!user || !passwordOk) {
+      return invalid(401)
     }
 
-    if (user.pwd !== pwd) {
-      const message = 'Contraseña incorrecta'
-      if (contentType.includes('application/json')) {
-        c.status(401)
-        return c.json({ auth: false, message })
-      }
-      return c.render(<Login error={message} uid={uid} />)
+    if (!BCRYPT_HASH_PATTERN.test(user.pwd)) {
+      const upgraded = await bcrypt.hash(pwd, 12)
+      await conn.execute('UPDATE Passwords SET pwd = ? WHERE uid = ?', [upgraded, user.uid])
+      console.log(`Contraseña de ${user.name} migrada a hash bcrypt`)
     }
 
-    setCookie(c, 'auth', 'true')
-    setCookie(c, 'uid', String(user.uid))
+    const payload = {
+      uid: user.uid,
+      user: user.name,
+      exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS
+    }
+
+    const token = await sign(payload, JWT_SECRET, 'HS256')
+    setCookie(c, TOKEN_COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'Lax',
+      path: '/',
+      maxAge: TOKEN_TTL_SECONDS,
+      secure: process.env.NODE_ENV === 'production',
+    })
 
     console.log(`Login exitoso para ${user.name} (uid ${user.uid}) desde ${getConnInfo(c).remote.address}`)
 
@@ -99,10 +176,11 @@ app.post('/api/login', async (c) => {
   catch (e) {
     console.log(`Error while serving request from client @ ${getConnInfo(c).remote.address} \n ${e}`)
     c.status(500)
-    return c.json({ auth: false, message: `Internal server error: ${(e as Error).message}` })
+    return c.json({ message: `Internal server error: ${(e as Error).message}` })
   }
 })
 
+app.use('/home', auth)
 app.get('/home', async (c) => {
   try {
     const [rows] = await conn.query<PatientRecord[]>('SELECT * FROM historiales_clinicos')
@@ -115,23 +193,34 @@ app.get('/home', async (c) => {
   }
 })
 
+app.use('/search', auth)
 app.get('/search', (c) => {
   return c.render(<Search />)
 })
 
+app.use('/patient/*', auth)
 app.get('/patient/lookup', (c) => {
-  const id = c.req.query('id')
+  const id = (c.req.query('id') ?? '').trim()
+  if (!PATIENT_ID_PATTERN.test(id)) {
+    return c.render(<Search error="El ID del paciente debe ser numérico" />)
+  }
   return c.redirect(`/patient/${id}`)
 })
 
 app.get('/patient/:patientID', async (c) => {
   const patientID = c.req.param('patientID')
+  if (!PATIENT_ID_PATTERN.test(patientID)) {
+    c.status(400)
+    return c.render(<Search error="El ID del paciente debe ser numérico" />)
+  }
   try {
-    const [rows] = await conn.query<PatientRecord[]>(
-      `SELECT * FROM historiales_clinicos WHERE ID_Paciente = '${patientID}'`
+    const [rows] = await conn.execute<PatientRecord[]>(
+      'SELECT * FROM historiales_clinicos WHERE ID_Paciente = ?',
+      [patientID]
     )
     const record = rows[0]
     if (!record) {
+      c.status(404)
       return c.render(<Search error={`No se encontró el paciente ${patientID}`} />)
     }
     return c.render(<Patient record={record} />)

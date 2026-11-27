@@ -37,7 +37,7 @@ export function Patient({ record }: { record: PatientRecord }) {
       <div className="card w-2xl bg-base-200 border-base-300 rounded-box border shadow-sm">
         <div className="card-body">
           <h1 className="card-title text-3xl">
-            <span dangerouslySetInnerHTML={{ __html: record.Nombre_Completo }} />
+            <span>{record.Nombre_Completo}</span>
           </h1>
           <table className="table">
             <tbody>

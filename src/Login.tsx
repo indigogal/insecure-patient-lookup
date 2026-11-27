@@ -10,10 +10,10 @@ export function Login({ error, uid }: { error?: string; uid?: string }) {
         <legend className="fieldset-legend">Login</legend>
 
         {error ? (
-          <div role="alert" className="alert alert-error mb-4" dangerouslySetInnerHTML={{ __html: error }} />
+          <div role="alert" className="alert alert-error mb-4">{error}</div>
         ) : null}
 
-        <label className="label">Numero de empleado</label>
+        <label className="label">Numero de empleado o usuario</label>
         <input type="text" className="input" name="uid" id="uid" value={uid} />
 
         <label className="label">Contraseña</label>

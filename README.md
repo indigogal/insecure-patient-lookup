@@ -1,14 +1,16 @@
 # Insecure Patient Lookup
 
-Esta aplicación está creada para ser deliberadamente explotable e insegura, con el fin de demostrar diferentes vulnerabilidades que podrían afectar a aplicaciones web y sistemas mal escritos.
+Esta aplicación está creada para demostrar vulnerabilidades comunes en aplicaciones web. La rama `main` contiene la versión deliberadamente explotable; la rama `fixed` mantiene el mismo comportamiento visible pero aplica las correcciones, de modo que el contraste entre ambas es el material de estudio.
 
-El caso que se examinará en este repositorio es el de una clínica que utiliza esta aplicación de Node como interfaz para su base de datos (consulta el CSV para ver un registro en texto plano). La aplicación puede buscar información de pacientes y mostrarla, algo sencillo. Las siguientes vulnerabilidades están presentes en esta aplicación:
+El caso que se examinará en este repositorio es el de una clínica que utiliza esta aplicación de Node como interfaz para su base de datos (consulta el CSV para ver un registro en texto plano). La aplicación puede buscar información de pacientes y mostrarla, algo sencillo. En `main` las vulnerabilidades presentes son:
 
 - XSS
 - SQLi
 - Falta de SSL / sin HTTPS
 - Cookies de login débiles y almacenadas en texto plano
 - Autenticación débil por contraseña, sin MFA ni limitación de intentos (rate-limiting) en el servidor
+
+En `fixed` están corregidas la inyección SQL del login y de la búsqueda de pacientes, el XSS reflejado de los mensajes de error y el XSS almacenado de los campos del paciente, además del almacenamiento de contraseñas y la gestión de sesión con JWT. Siguen pendientes HTTPS, MFA y rate-limiting.
 
 ## Ejecución con Docker
 
@@ -45,7 +47,7 @@ Abre <http://localhost:8080/login> e inicia sesión con:
 
 | Campo | Valor |
 | --- | --- |
-| Número de empleado (`uid`) | `1` |
+| Número de empleado (`uid`) o usuario | `1` o `admin` |
 | Contraseña | `admin` |
 
 Los ejemplos de `curl` de la sección de vulnerabilidades usan el puerto `5173` porque se probaron con el servidor local (`pnpm dev`); con Docker basta cambiar el puerto a `8080`.
@@ -76,54 +78,46 @@ La aplicación lee la conexión a la base de datos desde el entorno (`src/index.
 
 Para cambiarlos, edita el bloque `environment` de los servicios `app` y `seed` (y las variables `MARIADB_*` del servicio `db`) en `docker-compose.yml`. Los datos solo se inicializan cuando el volumen está vacío: si cambias las credenciales o el esquema, usa `docker compose down -v` antes de volver a levantar.
 
-## Vulnerabilidades documentadas
+## Correcciones aplicadas en `fixed`
 
-### Inyección SQL en `/api/login` (bypass de autenticación)
+### Inyección SQL en `/patient/:patientID`
 
-La ruta `POST /api/login` construye la consulta concatenando el valor de `uid` directamente en el SQL (sin consultas parametrizadas). Además, la aplicación devuelve mensajes distintos según el usuario exista o no, lo que permite enumerar cuentas válidas. Los siguientes ejemplos fueron probados y verificados contra la aplicación en ejecución (`localhost:5173`), con el usuario de prueba `uid=1 / admin / admin` (almacenado en texto plano, por cierto).
-
-**1. Login correcto**
+En `main`, `GET /patient/:patientID` concatena el parámetro de la URL en el SQL. El siguiente ejemplo devuelve una fila fabricada sin existir en la base de datos:
 
 ```bash
-curl -i -X POST http://localhost:5173/api/login \
-  -H 'Content-Type: application/json' \
-  -d '{"uid":"1","pwd":"admin"}'
+curl -G 'http://localhost:8080/patient/0%27%20UNION%20SELECT%201,%27Nombre%27,%27Genero%27,%27Fecha%27,%27Sangre%27,%27Ingreso%27,%27Diagnostico%27,%27Tratamiento%27,%27Medico%27,%27Estado%27,%27Telefono%27,0,0%20--%20' \
+  -b 'auth=true'
 ```
 
-Respuesta esperada: `200 {"auth":true,"message":"Login exitoso","user":{"uid":1,"name":"admin"}}` y las cookies `auth=true` y `uid=1` (sin `HttpOnly`, `Secure` ni expiración).
+En `fixed` la consulta usa un placeholder (`WHERE ID_Paciente = ?` con `conn.execute`) y el ID debe ser numérico, así que el ejemplo responde `400` con un mensaje de error. Lo mismo aplica a `/patient/lookup`, que ya no redirige con un ID arbitrario.
 
-**2. Enumeración de usuarios**
+### `/api/login`
+
+En `main` la consulta se construye concatenando `uid`, los mensajes de error distinguen entre usuario inexistente y contraseña errónea, y las contraseñas están en texto plano. En `fixed`:
+
+- La consulta usa un placeholder (`WHERE u.uid = ?`) con `conn.execute`, por lo que los bypass con `OR` y `UNION SELECT` ya no funcionan.
+- Las contraseñas se guardan como hash bcrypt y se comparan con `bcrypt.compare`. Las filas que todavía tengan texto plano se actualizan a bcrypt en el primer login exitoso.
+- El mensaje de error es siempre `Usuario o contraseña incorrectos`, sin distinguir entre usuario inexistente y contraseña errónea.
+- El identificador puede ser el número de empleado (`uid`, solo dígitos) o el nombre de usuario (`name`, hasta 60 caracteres alfanuméricos con `_ . -`), y la contraseña entre 1 y 72 caracteres ASCII imprimibles, el límite de bcrypt.
+- Los mensajes de error se renderizan como texto, no con `dangerouslySetInnerHTML`, así que ya no hay XSS reflejado en el formulario.
+- La sesión es un JWT firmado en la cookie `token`, con `HttpOnly`, `SameSite=Lax` y expiración de 3 horas.
+- `/home`, `/search` y `/patient/*` exigen un token válido; sin él o con el token expirado se redirige a `/login`.
+- `GET /logout` borra la cookie de sesión.
+
+Login correcto:
 
 ```bash
-curl -i -X POST http://localhost:5173/api/login \
+curl -i -X POST http://localhost:8080/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"uid":"999","pwd":"x"}'
+  -d '{"uid":"admin","pwd":"admin"}'
 ```
 
-Respuesta esperada: `404 {"auth":false,"message":"Usuario 999 no encontrado"}`. El mensaje distinto a "Contraseña incorrecta" confirma qué `uid` existen.
+Respuesta esperada: `200 {"auth":true,"message":"Login exitoso","user":{"uid":1,"name":"admin"}}` y la cookie `token` (JWT). Antes de desplegar, define `JWT_SECRET`; sin ella se usa el secreto de desarrollo `testing`.
 
-**3. Bypass con `OR` (login como el primer usuario de la tabla)**
+### XSS almacenado en los campos del paciente
 
-```bash
-curl -X POST http://localhost:5173/api/login \
-  -H 'Content-Type: application/json' \
-  -d @- <<'EOF'
-{"uid":"1' OR '1'='1","pwd":"admin"}
-EOF
-```
+En `main`, `Home.tsx` y `Patient.tsx` renderizan `Nombre_Completo` con `dangerouslySetInnerHTML`, así que un registro con HTML en ese campo se ejecuta como XSS almacenado. En `fixed` ese campo se renderiza como texto, igual que el resto de la fila.
 
-La consulta resultante es `WHERE u.uid = '1' OR '1'='1'`, que devuelve todos los usuarios; como la app se queda con el primero, basta conocer su contraseña (por ejemplo `admin`) para entrar.
+### Pendiente
 
-**4. Bypass con `UNION SELECT` (identidad fabricada, sin conocer ninguna contraseña)**
-
-```bash
-curl -X POST http://localhost:5173/api/login \
-  -H 'Content-Type: application/json' \
-  -d @- <<'EOF'
-{"uid":"' UNION SELECT 99, 'root', 'owned' -- ","pwd":"owned"}
-EOF
-```
-
-Repuesta esperada: `200 {"auth":true,"message":"Login exitoso","user":{"uid":99,"name":"root"}}` — se autentica contra una fila que no existe en la base de datos. Nota: el `-- ` debe llevar un espacio al final para que el apóstrofo que cierra la consulta quede comentado.
-
-Las mismas inyecciones funcionan enviando el formulario de la página `/login` directamente (la ruta también acepta `application/x-www-form-urlencoded`); la única diferencia es que el fallo re-renderiza la página con el mensaje de error insertado con `dangerouslySetInnerHTML`, lo que convierte el campo `uid` en un vector XSS reflejado.
+HTTPS, MFA y rate-limiting en el login siguen sin implementarse.
