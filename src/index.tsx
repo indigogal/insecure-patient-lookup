@@ -13,6 +13,7 @@ import { HTTPException } from 'hono/http-exception'
 import { sign, verify, jwt } from 'hono/jwt'
 import { timingSafeEqual } from 'node:crypto'
 import bcrypt from 'bcrypt'
+import { rateLimiter } from 'hono-rate-limiter'
 
 const SECRET = process.env.JWT_SECRET
 if (!SECRET) {
@@ -46,6 +47,12 @@ const conn = await mysql.createConnection({
 })
 
 const app = new Hono()
+app.use(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-6',
+  keyGenerator: (c) => c.req.header('x-forwarded-for') ?? 'anonymous',
+}))
 
 const auth = jwt({ secret: JWT_SECRET, alg: 'HS256', cookie: TOKEN_COOKIE })
 
